@@ -1,5 +1,5 @@
 // test_validation.cpp
-// Black-box validation of ApplyGlobalOperator on MakeCubeMesh.
+// Black-box validation of ApplyGlobalLinearElasticityOperator on MakeCubeMesh.
 //
 // True patch test (interior nodes), 6 rigid-body modes, null-space rank,
 // PSD spectrum, energy consistency, refinement invariance, and analytical
@@ -44,7 +44,7 @@ double IndependentStrainEnergy(
     const std::vector<std::array<LinearElasticMaterial, 4>>& material
 ) {
     double energy = 0.0;
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
 
     for (int e = 0; e < mesh.NumElements(); ++e) {
         Vector3 corners[4];
@@ -100,7 +100,7 @@ TEST(Validation, TruePatchTestInteriorNodes) {
     const auto u = MakeLinearField(mesh, A, b);
 
     std::vector<Vector3> y;
-    ApplyGlobalOperator(mesh, u, material, y);
+    ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
 
     int interior_count = 0;
     for (int n = 0; n < mesh.NumNodes(); ++n) {
@@ -126,7 +126,7 @@ TEST(Validation, RigidBodyNullSpace) {
     for (const auto& t : translations) {
         const auto u = MakeRigidTranslation(mesh, t);
         std::vector<Vector3> y;
-        ApplyGlobalOperator(mesh, u, material, y);
+        ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
         for (int n = 0; n < mesh.NumNodes(); ++n) {
             ExpectVector3Near(y[n], Vector3::Zero(), 1e-7);
         }
@@ -140,7 +140,7 @@ TEST(Validation, RigidBodyNullSpace) {
     for (const auto& omega : rotations) {
         const auto u = MakeRigidRotation(mesh, omega);
         std::vector<Vector3> y;
-        ApplyGlobalOperator(mesh, u, material, y);
+        ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
         for (int n = 0; n < mesh.NumNodes(); ++n) {
             ExpectVector3Near(y[n], Vector3::Zero(), 1e-6);
         }
@@ -192,7 +192,7 @@ TEST(Validation, EnergyConsistency) {
     const auto u = MakeLinearField(mesh, A, Vector3::Zero());
 
     std::vector<Vector3> Ku;
-    ApplyGlobalOperator(mesh, u, material, Ku);
+    ApplyGlobalLinearElasticityOperator(mesh, u, material, Ku);
 
     const double uKu = GlobalDot(u, Ku);
     const double strain_energy = IndependentStrainEnergy(mesh, u, material);
@@ -214,7 +214,7 @@ TEST(Validation, RefinementInvarianceLinearField) {
         const auto material = UniformMaterial(mesh.NumElements(), lambda, mu);
         const auto u = MakeLinearField(mesh, A, b);
         std::vector<Vector3> Ku;
-        ApplyGlobalOperator(mesh, u, material, Ku);
+        ApplyGlobalLinearElasticityOperator(mesh, u, material, Ku);
         energies[d] = 0.5 * GlobalDot(u, Ku);
     }
 
@@ -241,7 +241,7 @@ TEST(Validation, AnalyticalUniaxialStretchEnergy) {
     const auto u = MakeLinearField(mesh, A, Vector3::Zero());
 
     std::vector<Vector3> Ku;
-    ApplyGlobalOperator(mesh, u, material, Ku);
+    ApplyGlobalLinearElasticityOperator(mesh, u, material, Ku);
     const double energy = 0.5 * GlobalDot(u, Ku);
 
     const double expected =

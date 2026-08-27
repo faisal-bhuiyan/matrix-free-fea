@@ -38,7 +38,7 @@ TEST(Assembly, CornerNodeEquilibrium) {
     MakeDefaultLinearField(mesh, u_global);
 
     std::vector<Vector3> y_global;
-    ApplyGlobalOperator(mesh, u_global, material, y_global);
+    ApplyGlobalLinearElasticityOperator(mesh, u_global, material, y_global);
 
     const int corner_nodes[] = {0, 1, 2, 3, 4};
     for (int n : corner_nodes) {
@@ -54,7 +54,7 @@ TEST(Assembly, GlobalForceBalance) {
     MakeDefaultLinearField(mesh, u_global);
 
     std::vector<Vector3> y_global;
-    ApplyGlobalOperator(mesh, u_global, material, y_global);
+    ApplyGlobalLinearElasticityOperator(mesh, u_global, material, y_global);
 
     Vector3 total = Vector3::Zero();
     for (const Vector3& y : y_global) {
@@ -71,8 +71,8 @@ TEST(Assembly, GlobalSymmetry) {
     const auto v_global = MakeRandomField(mesh, 43);
 
     std::vector<Vector3> Ku, Kv;
-    ApplyGlobalOperator(mesh, u_global, material, Ku);
-    ApplyGlobalOperator(mesh, v_global, material, Kv);
+    ApplyGlobalLinearElasticityOperator(mesh, u_global, material, Ku);
+    ApplyGlobalLinearElasticityOperator(mesh, v_global, material, Kv);
 
     double vTKu = 0.0;
     double uTKv = 0.0;
@@ -108,14 +108,14 @@ TEST(Assembly, SingleElementMatchesKernel) {
     }
 
     Vector3 y_kernel[kNodesPerTetElement];
-    ComputeElementOperator(corners, u_local, mat, y_kernel);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_kernel);
 
     std::vector<Vector3> u_global(mesh.NumNodes());
     for (int i = 0; i < kNodesPerTetElement; ++i) {
         u_global[mesh.elements[0][i]] = u_local[i];
     }
     std::vector<Vector3> y_global;
-    ApplyGlobalOperator(mesh, u_global, material, y_global);
+    ApplyGlobalLinearElasticityOperator(mesh, u_global, material, y_global);
 
     for (int i = 0; i < kNodesPerTetElement; ++i) {
         ExpectVector3Near(y_global[mesh.elements[0][i]], y_kernel[i], 1e-10);
@@ -130,7 +130,7 @@ TEST(Assembly, DisconnectedPairIsolatesScatter) {
     auto u_global = MakeRandomField(mesh, 99);
 
     std::vector<Vector3> y_global;
-    ApplyGlobalOperator(mesh, u_global, material, y_global);
+    ApplyGlobalLinearElasticityOperator(mesh, u_global, material, y_global);
 
     // Independently compute each element's contribution.
     for (int e = 0; e < 2; ++e) {
@@ -145,7 +145,7 @@ TEST(Assembly, DisconnectedPairIsolatesScatter) {
             mat[q] = material[e][q];
         }
         Vector3 y_local[kNodesPerTetElement];
-        ComputeElementOperator(corners, u_local, mat, y_local);
+        ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
         for (int i = 0; i < kNodesPerTetElement; ++i) {
             ExpectVector3Near(y_global[mesh.elements[e][i]], y_local[i], 1e-10);
@@ -168,9 +168,9 @@ TEST(Assembly, GlobalLinearity) {
     }
 
     std::vector<Vector3> y1, y2, y_combo;
-    ApplyGlobalOperator(mesh, u1, material, y1);
-    ApplyGlobalOperator(mesh, u2, material, y2);
-    ApplyGlobalOperator(mesh, u_combo, material, y_combo);
+    ApplyGlobalLinearElasticityOperator(mesh, u1, material, y1);
+    ApplyGlobalLinearElasticityOperator(mesh, u2, material, y2);
+    ApplyGlobalLinearElasticityOperator(mesh, u_combo, material, y_combo);
 
     for (int n = 0; n < mesh.NumNodes(); ++n) {
         ExpectVector3Near(y_combo[n], a * y1[n] + b * y2[n], 1e-6);
@@ -184,7 +184,7 @@ TEST(Assembly, ZeroInputGivesZeroOutput) {
         static_cast<std::size_t>(mesh.NumNodes()), Vector3::Zero()
     );
     std::vector<Vector3> y;
-    ApplyGlobalOperator(mesh, u, material, y);
+    ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
     ASSERT_EQ(static_cast<int>(y.size()), mesh.NumNodes());
     for (const auto& yi : y) {
         ExpectVector3Near(yi, Vector3::Zero(), 1e-15);
@@ -200,7 +200,7 @@ TEST(Assembly, OutputIsResizedAndZeroed) {
 
     // Pre-populate with wrong size and garbage values.
     std::vector<Vector3> y(3, Vector3(999., 999., 999.));
-    ApplyGlobalOperator(mesh, u, material, y);
+    ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
 
     ASSERT_EQ(static_cast<int>(y.size()), mesh.NumNodes());
     for (const auto& yi : y) {

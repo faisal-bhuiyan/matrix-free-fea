@@ -64,7 +64,7 @@ void NaiveBtdBOperator(
 
     const ElementGeometry geo = ComputeElementGeometry(corners);
     const Matrix3 J_inv_T = geo.inverse_jacobian.transpose();
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
 
     // Flatten u into a 30-vector
     Eigen::VectorXd u(kElementDOFs);
@@ -152,7 +152,7 @@ TEST(ElementKernel, RigidBodyTranslation) {
     UniformMat(mat, 1.e5, 0.5e5);
 
     Vector3 y_local[10];
-    ComputeElementOperator(corners, u_local, mat, y_local);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
     for (int i = 0; i < 10; ++i) {
         ExpectVector3Near(y_local[i], Vector3::Zero(), 1e-8);
@@ -174,7 +174,7 @@ TEST(ElementKernel, ForceEquilibrium) {
     };
 
     Vector3 y_local[10];
-    ComputeElementOperator(corners, u_local, mat, y_local);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
     Vector3 sum = Vector3::Zero();
     for (int i = 0; i < 10; ++i) {
@@ -199,7 +199,7 @@ TEST(ElementKernel, CornerNodesUnderLinearField) {
     UniformMat(mat, 1.e5, 0.5e5);
 
     Vector3 y_local[10];
-    ComputeElementOperator(corners, u_local, mat, y_local);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
     for (int i = 0; i < 4; ++i) {
         ExpectVector3Near(y_local[i], Vector3::Zero(), 1e-6);
@@ -220,7 +220,7 @@ TEST(ElementKernel, RigidBodyRotation) {
     UniformMat(mat, 1.e5, 0.5e5);
 
     Vector3 y_local[10];
-    ComputeElementOperator(corners, u_local, mat, y_local);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
     for (int i = 0; i < 10; ++i) {
         ExpectVector3Near(y_local[i], Vector3::Zero(), 1e-7);
@@ -247,9 +247,9 @@ TEST(ElementKernel, LinearityInDisplacement) {
         u_combo[i] = a * u1[i] + b * u2[i];
     }
 
-    ComputeElementOperator(corners, u1, mat, y1);
-    ComputeElementOperator(corners, u2, mat, y2);
-    ComputeElementOperator(corners, u_combo, mat, y_combo);
+    ComputeElementLinearElasticityOperator(corners, u1, mat, y1);
+    ComputeElementLinearElasticityOperator(corners, u2, mat, y2);
+    ComputeElementLinearElasticityOperator(corners, u_combo, mat, y_combo);
 
     for (int i = 0; i < 10; ++i) {
         y_expected[i] = a * y1[i] + b * y2[i];
@@ -279,9 +279,11 @@ TEST(ElementKernel, LinearityInMaterial) {
     }
 
     Vector3 y1[10], y2[10], y_combo[10];
-    ComputeElementOperator(corners, u_local, mat1, y1);
-    ComputeElementOperator(corners, u_local, mat2, y2);
-    ComputeElementOperator(corners, u_local, mat_combo, y_combo);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat1, y1);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat2, y2);
+    ComputeElementLinearElasticityOperator(
+        corners, u_local, mat_combo, y_combo
+    );
 
     for (int i = 0; i < 10; ++i) {
         ExpectVector3Near(y_combo[i], a * y1[i] + b * y2[i], 1e-5);
@@ -304,8 +306,8 @@ TEST(ElementKernel, ElementSymmetry) {
     }
 
     Vector3 Ku[10], Kv[10];
-    ComputeElementOperator(corners, u, mat, Ku);
-    ComputeElementOperator(corners, v, mat, Kv);
+    ComputeElementLinearElasticityOperator(corners, u, mat, Ku);
+    ComputeElementLinearElasticityOperator(corners, v, mat, Kv);
 
     const double vKu = LocalDot(v, Ku);
     const double uKv = LocalDot(u, Kv);
@@ -329,7 +331,7 @@ TEST(ElementKernel, PositiveSemiDefinite) {
             u[i] = Vector3(dist(rng), dist(rng), dist(rng));
         }
         Vector3 Ku[10];
-        ComputeElementOperator(corners, u, mat, Ku);
+        ComputeElementLinearElasticityOperator(corners, u, mat, Ku);
         EXPECT_GE(LocalDot(u, Ku), -1e-8);
     }
 }
@@ -373,7 +375,7 @@ TEST(ElementKernel, MatchesNaiveBtdB) {
     }
 
     Vector3 y_mf[10], y_naive[10];
-    ComputeElementOperator(corners, u_local, mat, y_mf);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_mf);
     NaiveBtdBOperator(corners, u_local, mat, y_naive);
 
     for (int i = 0; i < 10; ++i) {
@@ -400,7 +402,7 @@ TEST(ElementKernel, UniaxialStretchStress) {
     }
 
     Vector3 y_local[10];
-    ComputeElementOperator(corners, u_local, mat, y_local);
+    ComputeElementLinearElasticityOperator(corners, u_local, mat, y_local);
 
     const double energy = 0.5 * LocalDot(u_local, y_local);
     const ElementGeometry geo = ComputeElementGeometry(corners);

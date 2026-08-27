@@ -12,13 +12,14 @@ namespace matrix_free_fea {
 //---------------------------------------------------------------------------
 
 /**
- * @brief A single quadrature point in the reference tetrahedron.
+ * @brief Represents a single quadrature point and its weight in the reference
+ * tetrahedron.
  *
  * Holds the barycentric coordinates (xi, eta, zeta) packed into a Vector3
  * and the associated integration weight for one point in the Hammer-Stroud
- * rule. The weight already incorporates the reference-tetrahedron volume
- * (1/6), so the integral of a function f over the reference tet is
- * approximated as sum_q weight_q * f(coords_q) with no further scaling.
+ * quadrature rule. The weight already incorporates the reference-tetrahedron
+ * volume (1/6), so the integral of a function f over the reference tet is
+ * approximated as -> sum_q (weight_q * f(coords_q)) with no further scaling.
  */
 struct QuadraturePoint {
     Vector3 coords;  ///< Barycentric coordinates (xi, eta, zeta) of the point
@@ -30,7 +31,7 @@ struct QuadraturePoint {
 //---------------------------------------------------------------------------
 
 /**
- * @brief Return the 4-point Hammer-Stroud quadrature rule for the reference
+ * @brief Returns the 4-point Hammer-Stroud quadrature rule for the reference
  *        tetrahedron.
  *
  * The rule is exact for polynomials up to total degree 2. The P2/quadratic
@@ -48,7 +49,7 @@ struct QuadraturePoint {
  *         The node coordinates are computed from their exact closed-form
  *         expressions at first call and cached for the lifetime of the program.
  */
-inline const std::array<QuadraturePoint, 4>& TetQuadratureRule() {
+inline const std::array<QuadraturePoint, 4>& TetrahedronQuadratureRule() {
     static const double a{(5. + 3. * std::sqrt(5.)) / 20.};
     static const double b{(5. - std::sqrt(5.)) / 20.};
     static constexpr double weight{1. / 24.};

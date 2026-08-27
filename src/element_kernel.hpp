@@ -11,10 +11,12 @@ namespace matrix_free_fea {
 // Constants
 //---------------------------------------------------------------------------
 
-constexpr int kDimensions{3};  ///< Spatial dimension
-constexpr int kElementDOFs{
-    kNodesPerTetElement * kDimensions
-};  ///< DOFs per element -> 10 nodes * 3 dimensions = 30
+/// @brief Spatial dimension
+constexpr int kDimensions{3};
+
+/// @brief DOFs per element -> 10 nodes * 3 dimensions = 30 (P2/quadratic
+/// tetrahedral element)
+constexpr int kElementDOFs{kNodesPerTetElement * kDimensions};
 
 //---------------------------------------------------------------------------
 // Data types
@@ -37,7 +39,7 @@ struct LinearElasticMaterial {
 //---------------------------------------------------------------------------
 
 /**
- * @brief Compute y_e = K_e * u_e for one element without forming K_e.
+ * @brief Computes y_e = K_e * u_e for one element without forming K_e.
  *
  * Implements the matrix-free evaluation of the local stiffness action via
  * the weak-form identity:
@@ -60,11 +62,11 @@ struct LinearElasticMaterial {
  * @param u_local        Nodal displacements, one Vector3 per node in
  *                       EvaluateShapeFunctions ordering
  * @param material_at_QP Lamé parameters at each of the 4 quadrature points,
- *                       in TetQuadratureRule() order
+ *                       in TetrahedronQuadratureRule() order
  * @param y_local        Output: local internal-force vector, one Vector3 per
  *                       node.  Zero-initialised by this function
  */
-inline void ComputeElementOperator(
+inline void ComputeElementLinearElasticityOperator(
     const Vector3 corner_nodes[4], const Vector3 u_local[kNodesPerTetElement],
     const LinearElasticMaterial material_at_QP[4],
     Vector3 y_local[kNodesPerTetElement]
@@ -80,12 +82,12 @@ inline void ComputeElementOperator(
     const Matrix3 J_inverse_transpose =
         element_geometry.inverse_jacobian.transpose();
 
-    const auto& quadrature_rule = TetQuadratureRule();
+    const auto& quadrature_rule = TetrahedronQuadratureRule();
     for (int qp_idx = 0; qp_idx < 4; ++qp_idx) {
         const QuadraturePoint& qp = quadrature_rule[qp_idx];
 
         // Shape-function gradients DO vary per quadrature point even
-        // though J does not (quadratic P2 basis vs. linear geometry)
+        // though J does NOT -> quadratic P2 basis vs. linear geometry
         const ShapeFunctionData shape_func =
             EvaluateShapeFunctions(qp.coords.x(), qp.coords.y(), qp.coords.z());
 
@@ -121,7 +123,7 @@ inline void ComputeElementOperator(
         };
 
         // Accumulate: y_i += w_q * det(J) * sigma * grad(N_i) ->
-        // (= B^T*sigma, implicit)
+        // (= B^T*sigma -> implicit)
         const double scale{qp.weight * element_geometry.det_jacobian};
         for (int node_idx = 0; node_idx < kNodesPerTetElement; ++node_idx) {
             y_local[node_idx] += (sigma * dN_dx[node_idx]) * scale;

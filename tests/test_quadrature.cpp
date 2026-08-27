@@ -29,7 +29,7 @@ double ExactMonomialIntegral(int a, int b, int c) {
 }
 
 double QuadratureMonomial(int a, int b, int c) {
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
     double sum = 0.0;
     for (const auto& qp : rule) {
         const double xi = qp.coords.x();
@@ -44,7 +44,7 @@ double QuadratureMonomial(int a, int b, int c) {
 }  // namespace
 
 TEST(Quadrature, WeightsSumToReferenceVolume) {
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
     double sum = 0.0;
     for (const auto& qp : rule) {
         EXPECT_NEAR(qp.weight, 1.0 / 24.0, 1e-15);
@@ -54,7 +54,7 @@ TEST(Quadrature, WeightsSumToReferenceVolume) {
 }
 
 TEST(Quadrature, PointsInsideReferenceTet) {
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
     const double a = (5. + 3. * std::sqrt(5.)) / 20.;
     const double b = (5. - std::sqrt(5.)) / 20.;
     EXPECT_NEAR(a + 3. * b, 1.0, 1e-14);
@@ -75,7 +75,7 @@ TEST(Quadrature, PointsInsideReferenceTet) {
 TEST(Quadrature, PermutationSymmetry) {
     // The four points are the four permutations of (a,b,b,b) in barycentric
     // coordinates, so the set of (xi,eta,zeta) must be closed under cycling.
-    const auto& rule = TetQuadratureRule();
+    const auto& rule = TetrahedronQuadratureRule();
     const double a = (5. + 3. * std::sqrt(5.)) / 20.;
     const double b = (5. - std::sqrt(5.)) / 20.;
 

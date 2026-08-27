@@ -137,7 +137,9 @@ inline Eigen::MatrixXd AssembleElementMatrix(
         u_local[col / kDimensions][col % kDimensions] = 1.0;
 
         Vector3 y_local[kNodesPerTetElement];
-        ComputeElementOperator(corners, u_local, material_at_QP, y_local);
+        ComputeElementLinearElasticityOperator(
+            corners, u_local, material_at_QP, y_local
+        );
 
         for (int row = 0; row < kElementDOFs; ++row) {
             K(row, col) = y_local[row / kDimensions][row % kDimensions];
@@ -160,7 +162,7 @@ inline Eigen::MatrixXd AssembleGlobalMatrix(
         u[static_cast<std::size_t>(col / kDimensions)][col % kDimensions] = 1.0;
 
         std::vector<Vector3> y;
-        ApplyGlobalOperator(mesh, u, material, y);
+        ApplyGlobalLinearElasticityOperator(mesh, u, material, y);
 
         for (int row = 0; row < ndof; ++row) {
             K(row, col) = y[static_cast<std::size_t>(row / kDimensions)]

@@ -8,13 +8,11 @@ namespace matrix_free_fea {
 // Constants and data types
 //---------------------------------------------------------------------------
 
-/**
- * @brief Number of nodes per P2 quadratic tetrahedron.
- */
+/// @brief Number of nodes per P2/quadratic tetrahedron element
 constexpr int kNodesPerTetElement{10};
 
 /**
- * @brief Shape function values and reference-space gradients at a single
+ * @brief Holds shape function values and reference-space gradients at a single
  *        quadrature point.
  *
  * Holds the output of @ref EvaluateShapeFunctions for the standard quadratic
@@ -38,8 +36,8 @@ struct ShapeFunctionData {
 //---------------------------------------------------------------------------
 
 /**
- * @brief Evaluate all 10 P2 shape functions and their reference-space
- *        gradients at a point in the reference tetrahedron.
+ * @brief Evaluates all 10 P2/quadratic shape functions and their reference
+ * space gradients at a given point in the reference tetrahedron.
  *
  * The reference tetrahedron has vertices at (0,0,0), (1,0,0), (0,1,0) and
  * (0,0,1) in (xi, eta, zeta).  The four barycentric coordinates are
@@ -54,11 +52,11 @@ struct ShapeFunctionData {
  *   Corner nodes (a = 0..3):  N_a = L_a * (2*L_a - 1)
  *   Edge nodes   (p,q pair):  N   = 4 * L_p * L_q
  *
- * @param xi   First barycentric coordinate (>= 0).
- * @param eta  Second barycentric coordinate (>= 0).
- * @param zeta Third barycentric coordinate (>= 0, xi+eta+zeta <= 1).
+ * @param xi   First barycentric coordinate (>= 0)
+ * @param eta  Second barycentric coordinate (>= 0)
+ * @param zeta Third barycentric coordinate (>= 0, xi+eta+zeta <= 1)
  * @return A ShapeFunctionData holding all N_i values and dN_i/d(xi, eta, zeta)
- * vectors.
+ * vectors
  */
 inline ShapeFunctionData EvaluateShapeFunctions(
     double xi, double eta, double zeta
@@ -81,18 +79,18 @@ inline ShapeFunctionData EvaluateShapeFunctions(
 
     ShapeFunctionData shape_func{};
 
-    // Corner nodes: N_a = L_a * (2*L_a - 1), a = 0, 1, 2, 3
+    // Corner nodes (4): N_a = L_a * (2*L_a - 1), a = 0, 1, 2, 3
     for (int node_idx = 0; node_idx < 4; ++node_idx) {
-        // shape function value for corner nodes
+        // shape function values for corner nodes
         shape_func.shape_func_values[node_idx] =
             L[node_idx] * (2. * L[node_idx] - 1.);
 
-        // reference-space gradient for corner nodes -> dL_a/dxi
+        // reference-space gradients for corner nodes -> dL_a/dxi
         shape_func.shape_func_derivatives[node_idx] =
             dL[node_idx] * (4. * L[node_idx] - 1.);
     }
 
-    // Edge nodes: N = 4*L_p*L_q -> pairing matches the node-ordering above
+    // Edge nodes (6): N = 4*L_p*L_q -> pairing matches the node-ordering above
     static const int edge_pairs[6][2]{
         {0, 1},  // edge 0
         {1, 2},  // edge 1
@@ -103,17 +101,19 @@ inline ShapeFunctionData EvaluateShapeFunctions(
     };
 
     for (int edge_idx = 0; edge_idx < 6; ++edge_idx) {
-        const int p{edge_pairs[edge_idx][0]};
-        const int q{edge_pairs[edge_idx][1]};
+        const int edge_node_1{edge_pairs[edge_idx][0]};
+        const int edge_node_2{edge_pairs[edge_idx][1]};
         const int node_idx{4 + edge_idx};
 
-        // shape function value for edge nodes -> N = 4 * L_p * L_q
-        shape_func.shape_func_values[node_idx] = 4. * L[p] * L[q];
+        // shape function values for edge nodes -> N = 4 * L_p * L_q
+        shape_func.shape_func_values[node_idx] =
+            4. * L[edge_node_1] * L[edge_node_2];
 
-        // reference-space gradient for edge nodes ->
-        //  dN/dxi = 4 * L_q * (dL_p/dxi) + 4 * L_p * (dL_q/dxi)
+        // reference-space gradients for edge nodes ->
+        // dN/dxi = 4 * L_q * (dL_node_1/dxi) + 4 * L_p * (dL_node_2/dxi)
         shape_func.shape_func_derivatives[node_idx] =
-            dL[p] * (4. * L[q]) + dL[q] * (4. * L[p]);
+            dL[edge_node_1] * (4. * L[edge_node_2]) +
+            dL[edge_node_2] * (4. * L[edge_node_1]);
     }
     return shape_func;
 }

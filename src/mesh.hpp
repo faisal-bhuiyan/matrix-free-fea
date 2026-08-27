@@ -13,7 +13,7 @@ namespace matrix_free_fea {
 //---------------------------------------------------------------------------
 
 /**
- * @brief Global-to-local connectivity for one P2 tetrahedral element.
+ * @brief Global-to-local connectivity for one P2/quadratic tetrahedral element.
  *
  * Maps the element's 10 local node slots (in the ordering defined by
  * @ref EvaluateShapeFunctions) to global node indices in the Mesh node array.
@@ -21,7 +21,8 @@ namespace matrix_free_fea {
 using ElementConnectivity = std::array<int, kNodesPerTetElement>;
 
 /**
- * @brief Minimal mesh: global node coordinates and per-element connectivity.
+ * @brief A minimal mesh data structure holding global node coordinates and
+ * per-element connectivity.
  *
  * Stores only what the matrix-free operator needs: the physical coordinates
  * of every global node and, for each element, the 10 global indices that
@@ -30,46 +31,44 @@ using ElementConnectivity = std::array<int, kNodesPerTetElement>;
  */
 struct Mesh {
     std::vector<Vector3>
-        node_coords;  ///< Physical (x,y,z) coordinate of each global node
+        node_coords;  ///< Physical (x,y,z) coordinates of each global node
 
     std::vector<ElementConnectivity>
         elements;  ///< Per-element connectivity arrays
 
-    /**
-     * @brief Return the number of global nodes.
-     */
+    /// @brief Returns the number of global nodes
     int NumNodes() const { return static_cast<int>(node_coords.size()); }
 
-    /**
-     * @brief Return the number of elements.
-     */
+    /// @brief Returns the number of elements
     int NumElements() const { return static_cast<int>(elements.size()); }
 
     /**
-     * @brief Copy the 4 corner-node coordinates of an element into @p corners.
+     * @brief Copies the 4 corner-node coordinates of an element into @p
+     * corner_nodes.
      *
-     * Corners occupy local slots 0, 1, 2, 3 -> only these four enter the affine
-     * geometric map (see geometry.hpp), so the remaining 6 edge-midpoint
+     * Corner nodes occupy local slots 0, 1, 2, 3 -> only these four enter the
+     * affine geometric map (see geometry.hpp) -> remaining 6 edge-midpoint
      * slots are not needed here.
      *
-     * @param elem_index Index of the element (0-based).
-     * @param corners Output array of length 4 filled with the physical
-     *                coordinates of local corners 0, 1, 2, 3.
+     * @param elem_index Index of the element (0-based)
+     * @param corner_nodes Output array of length 4 filled with the physical
+     *                coordinates of local corner nodes 0, 1, 2, 3
      */
-    void ElementCorners(int elem_index, Vector3 corners[4]) const {
+    void ElementCorners(int elem_index, Vector3 corner_nodes[4]) const {
         const auto& connectivity{elements[elem_index]};
-        for (int i = 0; i < 4; ++i) {
-            corners[i] = node_coords[connectivity[i]];
+        for (int corner_idx = 0; corner_idx < 4; ++corner_idx) {
+            corner_nodes[corner_idx] = node_coords[connectivity[corner_idx]];
         }
     }
 
     /**
-     * @brief Copy all 10 nodal coordinates of an element into @p nodes.
+     * @brief Copies all 10 nodal coordinates of a P2/quadratic tetrahedral
+     * element into @p nodes.
      *
-     * @param elem_index Index of the element (0-based).
+     * @param elem_index Index of the element (0-based)
      * @param nodes   Output array of length 10 filled with the physical
-     *                coordinates of all local nodes in EvaluateShapeFunctions
-     *                order.
+     *                coordinates of all local nodes in @ref
+     *                EvaluateShapeFunctions order
      */
     void ElementNodes(
         int elem_index, Vector3 nodes[kNodesPerTetElement]
