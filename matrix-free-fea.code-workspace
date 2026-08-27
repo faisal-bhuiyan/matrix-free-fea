@@ -1,0 +1,20 @@
+{
+  "folders": [
+    {
+      "name": "matrix-free-fea",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "clang-format.executable": "/opt/homebrew/opt/llvm/bin/clang-format",
+    "clang-format.style": "file",
+    "clang-format.fallbackStyle": "Google",
+    "editor.formatOnSave": true,
+    "[c]": {
+      "editor.defaultFormatter": "xaver.clang-format"
+    },
+    "[cpp]": {
+      "editor.defaultFormatter": "xaver.clang-format"
+    }
+  }
+}
