@@ -15,6 +15,10 @@
     },
     "[cpp]": {
       "editor.defaultFormatter": "xaver.clang-format"
+    },
+    "files.associations": {
+      "*.cu": "cpp",
+      "*.cuh": "cpp"
     }
   }
 }
