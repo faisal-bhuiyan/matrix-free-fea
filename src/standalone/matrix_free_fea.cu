@@ -1,55 +1,85 @@
 /**
- * @file matrix_free_fea_cuda.cu
- * @brief CUDA matrix-free P2 tetrahedral linear-elasticity operator.
+ * @file matrix_free_fea.cu
+ * @brief Matrix-free CUDA P2 tetrahedral linear-elasticity operator.
  *
- * ---------------------------------------------------------------------------
  * Overview
- * ---------------------------------------------------------------------------
- * Evaluates y = K * u over a quadratic (10-node) tetrahedral mesh without
- * explicitly forming an element or global stiffness matrix. Every application
- * of the operator re-derives each element's contribution (on the fly) from the
- * mesh geometry and material data, so the working set shrinks from an assembled
- * matrix's non-zero elements (O(n^2)) to little more than the solution
- * vectors (O(n)).
+ * ---------------
+ * Applies y = K * u on a quadratic (10-node) tetrahedral mesh without
+ * assembling element or global stiffness matrices. Element contributions
+ * are recomputed from geometry and material data at each application,
+ * reducing memory working set to the input/output vectors rather than the
+ * assembled sparse matrix.
  *
- * The cost is recomputing the element integrals on each time the operator
- * is applied, which is the tradeoff a matrix-free formulation makes. On
- * bandwidth-bound hardware, and GPUs in particular, that recomputation is
- * typically cheaper than the memory fetches it replaces.
+ * This trades extra compute for much lower memory traffic -> a more favorable
+ * tradeoff on bandwidth-limited hardware such as GPUs.
  *
- * ---------------------------------------------------------------------------
  * Design choices
- * ---------------------------------------------------------------------------
- * Two design choices are worth calling out explicitly, both driven by the
- * target hardware:
+ * ---------------
+ * - **Small, custom linear algebra types**: Vector3 and Matrix3 are hand-rolled
+ *   to avoid fragile device support in general-purpose libraries (e.g. Eigen).
  *
- *   - Vector3 and Matrix3 are hand-rolled rather than taken from a
- *     general-purpose linear algebra library such as Eigen. Device support in
- *     such libraries is typically unofficial and has a history of breaking
- *     across nvcc releases.
+ * - **One CUDA thread per element**: Each thread evaluates 4 quadrature
+ *   points and the 30 local DOFs serially. Finer intra-element parallelism
+ *   yields little benefit at this granularity, throughput and latency hiding
+ *   benefits come from many concurrent element threads.
  *
- *   - The element loop is a CUDA kernel, one thread per element. Each thread
- *     runs its element's 4 quadrature points and 30 local DOFs serially -> at
- *     this size there is little to gain from finer parallelism, since the
- *     speedup comes from thousands of element threads running concurrently,
- *     as opposed to from splitting one element. The scatter-add pattern uses
- *     atomicAdd because elements sharing a face, edge, or vertex write to the
- *     same global node concurrently. Mesh coloring patterns would remove the
- *     atomics at the cost of real preprocessing complexity, and are
- *     deliberately out of scope for this implementation.
+ * - **Scatter-add with atomics**: Concurrent writes to shared nodes use
+ *   atomicAdd. Mesh coloring to remove atomics was considered but omitted
+ *   to avoid pre-processing complexity.
  *
- * Precision is double throughout -> a future implementation may support single
- * precision for reduced memory footprint via a template parameter.
+ * - **Double precision**: Used throughout, templating on scalar type is a
+ *   planned TODO.
  *
- * ---------------------------------------------------------------------------
+ * Assumptions
+ * ---------------
+ * The implementation assumes the following, without runtime checks:
+ *
+ * - det(J) > 0 for every element (non-degenerate, correctly ordered
+ *   tetrahedra).
+ *
+ * - Connectivity indices are valid indices into node_coords / u_global.
+ *
+ * - y_global is zeroed by the caller before kernel launch (e.g. via
+ *   cudaMemset) -> the kernel accumulates into it rather than assigning.
+ *
+ * - MeshView's arrays are sized to match its own num_nodes/num_elements:
+ *   node_coords holds >= num_nodes entries, connectivity holds exactly
+ *   num_elements * kNodesPerTetElement entries, material holds exactly
+ *   num_elements * kQuadraturePoints entries.
+ *
+ * - All MeshView pointers, and u_global/y_global, point to device memory,
+ *   not host memory.
+ *
+ * TODO/Future work
+ * ------------------
+ * Potential avenues for improvement in performance and robustness:
+ *
+ * - Runtime checks for degenerate elements (det(J) <= 0).
+ *
+ * - Bounds-check connectivity indices.
+ *
+ * - Mesh coloring to eliminate atomicAdd contention at the cost of a real
+ *   pre-processing pass to partition elements into conflict-free sets. Should
+ *   provide a significant speedup on large meshes.
+ *
+ * - Template on scalar type (float/double) -> use Concepts from C++20.
+ *
+ * - A CPU-vs-GPU output-differencing test harness -> run identical (mesh, u,
+ *   material) through this kernel and a from-scratch reference implementation
+ *   on CPU, diffing y_global to floating-point tolerance. This would also
+ *   serve as a validation of the implementation.
+ *
  * Out of scope
- * ---------------------------------------------------------------------------
- * - No linear solver (this is a single Krylov matrix-vector product, not an
- * actual linear solve)
- * - No mechanism for applying boundary conditions
- * - No mesh I/O (the mesh is assumed already resident on the device in
- * flattened form via a custom mesh format)
- * - No degenerate-element check (det(J) > 0 is assumed)
+ * ---------------
+ * - No linear solver: the operator is a single Krylov matrix-vector
+ *   product, not an actual linear solve.
+ *
+ * - No boundary-condition application mechanism.
+ *
+ * - No mesh I/O: mesh is expected resident on the device in the flattened
+ * format.
+ *
+ * - No degenerate-element handling: det(J) > 0 is assumed for all elements.
  */
 
 //---------------------------------------------------------------------------
@@ -58,8 +88,8 @@
 
 /**
  * @brief Marks a function callable from both host and device code. Expands to
- *        nothing under a non-CUDA compiler so this file's math functions still
- *        build and can be exercised on the host.
+ * nothing under a non-CUDA compiler so this file's math functions still build
+ * and can be exercised on the host.
  */
 #if defined(__CUDACC__)
 #define MFFEA_HOST_DEVICE __host__ __device__
@@ -85,6 +115,8 @@ struct Vector3 {
     double y{0.};  ///< Second component
     double z{0.};  ///< Third component
 
+    // no MFFEA_HOST_DEVICE required -> nvcc treats a first-declared defaulted
+    // special member as host+device automatically
     Vector3() = default;
 
     MFFEA_HOST_DEVICE Vector3(double x_in, double y_in, double z_in)
@@ -119,11 +151,8 @@ struct Vector3 {
 };
 
 /**
- * @brief A 3x3 matrix of doubles, usable on host and device.
- *
- * Entries are stored in a fixed row-major array and accessed through
- * operator(), so call sites read in conventional (row, col) form, e.g.
- * grad_displacement(dim_1, dim_2) += ...
+ * @brief A 3x3 matrix of doubles, usable on host and device. Entries are stored
+ * in a fixed row-major array and accessed through operator().
  */
 struct Matrix3 {
     /// Row-major entries -> m[row][col]
@@ -138,20 +167,24 @@ struct Matrix3 {
 
     /// @brief Returns the 3x3 identity matrix
     MFFEA_HOST_DEVICE static Matrix3 Identity() {
-        Matrix3 identity;
+        Matrix3 identity{Matrix3::Zero()};
         identity.m[0][0] = 1.;
         identity.m[1][1] = 1.;
         identity.m[2][2] = 1.;
         return identity;
     }
 
+    /// @brief Returns the entry at the specified row and column
     MFFEA_HOST_DEVICE double operator()(int row, int col) const {
         return m[row][col];
     }
+
+    /// @brief Returns the entry at the specified row and column (mutable)
     MFFEA_HOST_DEVICE double& operator()(int row, int col) {
         return m[row][col];
     }
 
+    /// @brief Multiplies this matrix by a vector
     MFFEA_HOST_DEVICE Vector3 operator*(const Vector3& v) const {
         return Vector3(
             m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
@@ -160,8 +193,9 @@ struct Matrix3 {
         );
     }
 
+    /// @brief Adds two matrices together
     MFFEA_HOST_DEVICE Matrix3 operator+(const Matrix3& other) const {
-        Matrix3 result;
+        Matrix3 result{Matrix3::Zero()};
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 3; ++col) {
                 result.m[row][col] = m[row][col] + other.m[row][col];
@@ -170,8 +204,9 @@ struct Matrix3 {
         return result;
     }
 
+    /// @brief Multiplies this matrix by a scalar
     MFFEA_HOST_DEVICE Matrix3 operator*(double scalar) const {
-        Matrix3 result;
+        Matrix3 result{Matrix3::Zero()};
         for (int row = 0; row < 3; ++row) {
             for (int col = 0; col < 3; ++col) {
                 result.m[row][col] = m[row][col] * scalar;
@@ -207,13 +242,15 @@ struct Matrix3 {
     /**
      * @brief Returns the inverse via the adjugate (cofactor) formula.
      *
-     * Closed-form rather than a factorisation because this is a 3x3 computed
-     * once per element, not in a hot inner loop. A singular matrix is not
-     * checked for -> det(J) > 0 is assumed for a non-degenerate element.
+     * Closed-form rather than a factorization because this is a 3x3 computed
+     * once per element, not in a hot inner loop.
+     *
+     * @note A singular matrix is not checked for -> det(J) > 0 is assumed for
+     * a non-degenerate element.
      */
     MFFEA_HOST_DEVICE Matrix3 Inverse() const {
         const double inv_det{1. / Determinant()};
-        Matrix3 result;
+        Matrix3 result{Matrix3::Zero()};
         result.m[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) * inv_det;
         result.m[0][1] = -(m[0][1] * m[2][2] - m[0][2] * m[2][1]) * inv_det;
         result.m[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * inv_det;
@@ -228,7 +265,7 @@ struct Matrix3 {
 };
 
 //---------------------------------------------------------------------------
-// Free-function helpers
+// Free-function helpers for matrix and vector operations
 //---------------------------------------------------------------------------
 
 /**
@@ -256,7 +293,7 @@ MFFEA_HOST_DEVICE inline Matrix3 FromColumns(
 }
 
 //---------------------------------------------------------------------------
-// Data types
+// Quadrature data types
 //---------------------------------------------------------------------------
 
 /**
@@ -288,7 +325,7 @@ constexpr int kQuadraturePoints{4};
  * The rule is exact for polynomials up to total degree 2. The P2/quadratic
  * tetrahedron's shape-function gradients are degree-1 polynomials in
  * (xi, eta, zeta) -> integrand epsilon(v):sigma(u) -> a product of two such
- * gradients -> is degree 2 and is integrated exactly.
+ * gradients -> is degree 2 and is integrated EXACTLY.
  *
  * Material properties lambda and mu are evaluated pointwise at each quadrature
  * point rather than interpolated -> they do not raise the polynomial degree.
@@ -296,20 +333,13 @@ constexpr int kQuadraturePoints{4};
  * The reference tetrahedron has volume 1/6; the 4 points share equal weight,
  * giving each weight = (1/6) / 4 = 1/24.
  *
- * The rule fills a caller-supplied array from literal constants rather than
- * returning a reference to a function-local static. That keeps the function
- * pure and stateless -> there is no device-side static whose initialisation
- * order and thread-safety across concurrently launched threads would need
- * reasoning about. The constants a and b below are (5 + 3*sqrt(5))/20 and
- * (5 - sqrt(5))/20 respectively.
- *
- * @param quadrature_rule Output: the 4 QuadraturePoint values of the rule
+ * @param quadrature_rule Output: 4 QuadraturePoint values of the rule
  */
 MFFEA_HOST_DEVICE inline void TetrahedronQuadratureRule(
     QuadraturePoint quadrature_rule[kQuadraturePoints]
 ) {
-    constexpr double a{0.5854101966249685};
-    constexpr double b{0.1381966011250105};
+    constexpr double a{0.5854101966249685};  // (5 + 3 * sqrt(5)) / 20
+    constexpr double b{0.1381966011250105};  // (5 - sqrt(5)) / 20
     constexpr double weight{1. / 24.};
 
     quadrature_rule[0] = QuadraturePoint{Vector3(a, b, b), weight};
@@ -319,14 +349,17 @@ MFFEA_HOST_DEVICE inline void TetrahedronQuadratureRule(
 }
 
 //---------------------------------------------------------------------------
-// Constants and data types
+// Shape function data types
 //---------------------------------------------------------------------------
 
 /// @brief Number of nodes per P2/quadratic tetrahedron element
 constexpr int kNodesPerTetElement{10};
 
-/// @brief Number of corner nodes per tetrahedron -> only these four enter the
-/// affine geometric map, while all 10 carry the quadratic displacement basis
+/**
+ * @brief Number of corner nodes per tetrahedron -> only these four enter the
+ *        affine geometric map, while all 10 carry the quadratic displacement
+ *        basis.
+ */
 constexpr int kCornersPerTetElement{4};
 
 /**
@@ -350,7 +383,7 @@ struct ShapeFunctionData {
 };
 
 //---------------------------------------------------------------------------
-// Evaluation
+// Evaluation of shape functions
 //---------------------------------------------------------------------------
 
 /**
@@ -413,7 +446,7 @@ MFFEA_HOST_DEVICE inline ShapeFunctionData EvaluateShapeFunctions(
             dL[node_idx] * (4. * L[node_idx] - 1.);
     }
 
-    // Edge nodes (6): N = 4*L_p*L_q -> pairing matches the node-ordering above
+    // Edge nodes (6): N = 4*L_p*L_q -> pairing matches node-ordering above
     const int edge_pairs[6][2]{
         {0, 1},  // edge 0
         {1, 2},  // edge 1
@@ -442,7 +475,7 @@ MFFEA_HOST_DEVICE inline ShapeFunctionData EvaluateShapeFunctions(
 }
 
 //---------------------------------------------------------------------------
-// Data types
+// Element geometry data types
 //---------------------------------------------------------------------------
 
 /**
@@ -465,7 +498,7 @@ struct ElementGeometry {
 };
 
 //---------------------------------------------------------------------------
-// Functions
+// Computation of element geometry
 //---------------------------------------------------------------------------
 
 /**
@@ -522,18 +555,14 @@ MFFEA_HOST_DEVICE inline void PhysicalGradients(
 }
 
 //---------------------------------------------------------------------------
-// Constants
+// Linear elastic material data types
 //---------------------------------------------------------------------------
 
-/// @brief Spatial dimension
+/// @brief Spatial dimension (to avoid magic numbers)
 constexpr int kDimensions{3};
 
-//---------------------------------------------------------------------------
-// Data types
-//---------------------------------------------------------------------------
-
 /**
- * @brief Lamé material parameters at a single quadrature point.
+ * @brief Material properties at a single quadrature point.
  *
  * Lambda and mu are provided pointwise rather than interpolated by a
  * polynomial basis, so they do not raise the polynomial degree of the
@@ -545,11 +574,12 @@ struct LinearElasticMaterial {
 };
 
 //---------------------------------------------------------------------------
-// Compute element operator
+// Compute element linear elasticity operator
 //---------------------------------------------------------------------------
 
 /**
- * @brief Computes y_e = K_e * u_e for one element without forming K_e.
+ * @brief Computes y_e = K_e * u_e for one element without forming the element
+ * stiffness matrix K_e.
  *
  * Implements the matrix-free evaluation of the local stiffness action via
  * the weak-form identity:
@@ -560,26 +590,26 @@ struct LinearElasticMaterial {
  * At each quadrature point the algorithm:
  *
  *   1. Evaluates dN/dx = J^{-T} * dN/dxi  (physical-space gradients)
- *   2. Assembles grad(u) = sum_i u_i (x) dN_i/dx  (B * u_e, never explicit)
+ *   2. Assembles grad(u) = sum_i u_i (x) dN_i/dx  (equivalent to B * u_e)
  *   3. Computes epsilon = sym(grad(u)) and sigma = lambda*tr(eps)*I + 2*mu*eps
- *   4. Accumulates y_i += w_q * det(J) * sigma * grad(N_i) -> (B^T * sigma,
- *      never explicit)
+ *   4. Accumulates y_i += w_q * det(J) * sigma * grad(N_i) -> ( equivalent to
+ *      B^T * sigma -> not explicitly formed)
  *
  * The geometric Jacobian J is constant across the element (affine map) and is
  * therefore computed once before the quadrature loop.
  *
- * This is the unit of work one CUDA thread performs, in full, for one element
- * -> see @ref GlobalLinearElasticOperatorKernel  below.
+ * This is the unit of work one CUDA thread performs, for one element -> see
+ * @ref GlobalOperatorKernel below.
  *
  * @param corner_nodes   Physical coordinates of the 4 corner nodes
  * @param u_local        Nodal displacements, one Vector3 per node in
  *                       EvaluateShapeFunctions ordering
- * @param material_at_QP Lamé parameters at each of the 4 quadrature points,
+ * @param material_at_QP Material properties at each of the 4 quadrature points,
  *                       in TetrahedronQuadratureRule() order
  * @param y_local        Output: local internal-force vector, one Vector3 per
- *                       node.  Zero-initialised by this function
+ *                       node. Zero-initialised by this function.
  */
-MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
+MFFEA_HOST_DEVICE inline void ComputeElementOperator(
     const Vector3 corner_nodes[kCornersPerTetElement],
     const Vector3 u_local[kNodesPerTetElement],
     const LinearElasticMaterial material_at_QP[kQuadraturePoints],
@@ -589,8 +619,8 @@ MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
         y_local[node_idx] = Vector3::Zero();
     }
 
-    // Affine map -> J, inverse_jacobian, det_jacobian are constant across
-    // the element -> compute once here rather than inside quadrature loop
+    // Affine map -> J, inverse_jacobian, det_jacobian are constant across the
+    // element and are computed once here rather than inside quadrature loop
     const ElementGeometry element_geometry{
         ComputeElementGeometry(corner_nodes)
     };
@@ -598,14 +628,15 @@ MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
         element_geometry.inverse_jacobian.Transpose()
     };
 
+    // Quadrature rule is constant across the element and is computed once here
     QuadraturePoint quadrature_rule[kQuadraturePoints];
     TetrahedronQuadratureRule(quadrature_rule);
 
     for (int qp_idx = 0; qp_idx < kQuadraturePoints; ++qp_idx) {
         const QuadraturePoint& qp{quadrature_rule[qp_idx]};
 
-        // Shape-function gradients DO vary per quadrature point even
-        // though J does NOT -> quadratic P2 basis vs. linear geometry
+        // Shape-function gradients DO vary per quadrature point even though J
+        // does NOT -> quadratic P2 basis vs. linear geometry
         const ShapeFunctionData shape_func{
             EvaluateShapeFunctions(qp.coords.x, qp.coords.y, qp.coords.z)
         };
@@ -617,21 +648,18 @@ MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
 
         // Strain: epsilon(u) = 0.5*(grad(u) + grad(u)^T)
         // grad(u)_{jk} = sum_i (u_local[i][j] * dN_dx[i][k]) ->
-        //  (= B*u_e, implicit)
-        Matrix3 grad_displacement{Matrix3::Zero()};
+        // (equivalent to B*u_e but not explicitly formed)
+        Matrix3 grad_u{Matrix3::Zero()};
         for (int node_idx = 0; node_idx < kNodesPerTetElement; ++node_idx) {
             const Vector3& u_i{u_local[node_idx]};
             const Vector3& dN_i_dx{dN_dx[node_idx]};
             for (int dim_1 = 0; dim_1 < kDimensions; ++dim_1) {
                 for (int dim_2 = 0; dim_2 < kDimensions; ++dim_2) {
-                    grad_displacement(dim_1, dim_2) +=
-                        u_i[dim_1] * dN_i_dx[dim_2];
+                    grad_u(dim_1, dim_2) += u_i[dim_1] * dN_i_dx[dim_2];
                 }
             }
         }
-        const Matrix3 epsilon{
-            (grad_displacement + grad_displacement.Transpose()) * 0.5
-        };
+        const Matrix3 epsilon{(grad_u + grad_u.Transpose()) * 0.5};
 
         // Stress: sigma = lambda*tr(eps)*I + 2*mu*eps
         const double lambda{material_at_QP[qp_idx].lambda};
@@ -642,7 +670,7 @@ MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
         };
 
         // Accumulate: y_i += w_q * det(J) * sigma * grad(N_i) ->
-        // (= B^T*sigma -> implicit)
+        // (equivalent to B^T*sigma but not explicitly formed)
         const double scale{qp.weight * element_geometry.det_jacobian};
         for (int node_idx = 0; node_idx < kNodesPerTetElement; ++node_idx) {
             y_local[node_idx] += (sigma * dN_dx[node_idx]) * scale;
@@ -651,28 +679,35 @@ MFFEA_HOST_DEVICE inline void ComputeElementLinearElasticOperator(
 }
 
 //---------------------------------------------------------------------------
-// Data types
+// Mesh view data types
 //---------------------------------------------------------------------------
 
 /**
- * @brief Device-resident, flattened view of the mesh.
+ * @brief Device-resident, flattened view of the mesh -> the kernel expects this
+ * layout to already be in device memory.
  *
- * Owning containers such as std::vector do not survive a trip to the device,
- * so the mesh is described here in flattened form: raw pointers into device
- * memory plus the two sizes. Building it -> copying each array across with
- * cudaMemcpy -> is the caller's job and out of this file's scope. This struct
- * only describes the layout the kernel expects to already find in device
- * memory.
+ * Example: 2 elements sharing a full triangular face (3 corners + 3 edge
+ * midpoints = 6 shared nodes), 14 global nodes total:
+ * @code
+ * connectivity = {
+ *     0, 1, 2, 3, 5, 6, 7, 8, 9, 10,      // element 0's 10 local slots
+ *     0, 2, 1, 4, 7, 6, 5, 11, 13, 12,    // element 1's 10 local slots
+ * };
+ * // Shared nodes: {0, 1, 2, 5, 6, 7} -> the 3 corners and 3 edge midpoints
+ * // of the common face. Note element 1's local slots 1 and 2 (nodes 2, 1)
+ * // are swapped relative to element 0's (nodes 1, 2) -> a corner reordering
+ * // needed to keep det(J) > 0 for both elements despite their apex nodes
+ * // (3 and 4) sitting on opposite sides of the shared face.
+ * @endcode
  */
 struct MeshView {
     /// Physical (x,y,z) coordinate of each global node -> [num_nodes]
     const Vector3* node_coords;
 
-    /// Per-element connectivity, row-major ->
-    /// [num_elements * kNodesPerTetElement]
+    /// Per-element connectivity, row-major -> num_elements * kNodesPerTetElem
     const int* connectivity;
 
-    /// Lamé parameters per element per quadrature point, row-major ->
+    /// Material properties per element per quadrature point, row-major ->
     /// [num_elements * kQuadraturePoints]
     const LinearElasticMaterial* material;
 
@@ -681,12 +716,12 @@ struct MeshView {
 };
 
 //---------------------------------------------------------------------------
-// Global matrix-free linear elasticity operator
+// Global linear elasticity operator kernel
 //---------------------------------------------------------------------------
 
 /**
  * @brief Applies the global stiffness operator y = K * u without ever forming
- * K -> one CUDA thread per element.
+ *        the global stiffness matrix K -> one CUDA thread per element.
  *
  * Each thread handles exactly one element and runs three phases:
  *
@@ -694,13 +729,13 @@ struct MeshView {
  *     displacements out of the global arrays into thread-local buffers, using
  *     the element's connectivity row as the index map.
  *
- *   - Apply -> call @ref ComputeElementLinearElasticOperator  to evaluate
+ *   - Apply -> call @ref ComputeElementOperator to evaluate
  *     y_local = K_e * u_local by quadrature -> K_e is likewise never formed.
  *
  *   - Scatter-add -> accumulate the 10 local force vectors back into y_global
  *     at those same connectivity slots.
  *
- * The scatter is the only phase that needs synchronisation. Elements sharing
+ * The scatter is the only phase that needs synchronization. Elements sharing
  * a face, edge, or vertex reach the same global node from different threads,
  * so plain += would race and each component goes through atomicAdd instead.
  * atomicAdd on double requires compute capability 6.0 or newer.
@@ -712,7 +747,7 @@ struct MeshView {
  *                  cudaMemset), since the kernel accumulates and concurrent
  *                  threads cannot each independently reset a shared array
  */
-__global__ void GlobalLinearElasticOperatorKernel(
+__global__ void GlobalOperatorKernel(
     MeshView mesh, const Vector3* u_global, Vector3* y_global
 ) {
     const int elem{static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x)};
@@ -723,8 +758,8 @@ __global__ void GlobalLinearElasticOperatorKernel(
     // Maps the element's 10 local slots -> global node indices
     const int* connectivity{mesh.connectivity + elem * kNodesPerTetElement};
 
-    // (1) Gather -> pull element's data out of the global arrays so the
-    // element operator can walk it contiguously
+    // (1) Gather -> pull element's data out of the global arrays so the element
+    // operator can walk it contiguously
     Vector3 corner_nodes[kCornersPerTetElement];
     for (int node_idx = 0; node_idx < kCornersPerTetElement; ++node_idx) {
         corner_nodes[node_idx] = mesh.node_coords[connectivity[node_idx]];
@@ -740,7 +775,7 @@ __global__ void GlobalLinearElasticOperatorKernel(
     // (2) Apply -> {y_local} = [K_e] * {u_local} by quadrature -> [K_e] is
     // never formed
     Vector3 y_local[kNodesPerTetElement];
-    ComputeElementLinearElasticOperator(
+    ComputeElementOperator(
         corner_nodes, u_local, mesh.material + elem * kQuadraturePoints, y_local
     );
 
@@ -756,10 +791,10 @@ __global__ void GlobalLinearElasticOperatorKernel(
 }
 
 /**
- * @brief Host-side launch wrapper for @ref GlobalLinearElasticOperatorKernel.
+ * @brief Host-side launch wrapper for @ref GlobalOperatorKernel.
  *
  * The block size is a multiple of the 32-thread warp size, as full-warp
- * utilisation requires, and is kept modest because each thread carries 30
+ * utilization requires, and is kept modest because each thread carries 30
  * local DOFs of live state -> a larger block would only cut occupancy
  * further.
  *
@@ -769,15 +804,13 @@ __global__ void GlobalLinearElasticOperatorKernel(
  *                  [num_nodes]. Must already be zeroed by the caller, since
  *                  the kernel accumulates rather than assigns
  */
-inline void LaunchGlobalLinearElasticOperatorKernel(
+inline void LaunchGlobalOperatorKernel(
     const MeshView& mesh, const Vector3* u_global, Vector3* y_global
 ) {
     constexpr int kBlockSize{128};
     const int grid_size{(mesh.num_elements + kBlockSize - 1) / kBlockSize};
 
-    GlobalLinearElasticOperatorKernel<<<grid_size, kBlockSize>>>(
-        mesh, u_global, y_global
-    );
+    GlobalOperatorKernel<<<grid_size, kBlockSize>>>(mesh, u_global, y_global);
 }
 
 }  // namespace matrix_free_fea
@@ -787,9 +820,9 @@ inline void LaunchGlobalLinearElasticOperatorKernel(
  * Validation and verification strategy
  * ---------------------------------------------------------------------------
  * This operator admits a strong set of black-box checks that hold exactly, or
- * to floating-point tolerance, independent of mesh or material. They are listed
- * here for reference; a recommended unit testing structure exercising each one
- * follows below.
+ * to floating-point tolerance, independent of mesh or material. These are
+ * listed here for reference. A recommended unit testing structure exercising
+ * each one follows below.
  *
  * Properties (exact i.e. machine epsilon, or to floating-point tolerance):
  *
@@ -816,7 +849,7 @@ inline void LaunchGlobalLinearElasticOperatorKernel(
  * 5. Energy consistency against an INDEPENDENTLY implemented quadrature pass.
  * Compare u.(K*u) (via this operator) against the same energy computed by a
  * second, separately-written integration routine that does not call
- * ComputeElementLinearElasticOperator .
+ * ComputeElementOperator .
  *
  * 6. Refinement invariance for an exact linear field. The quadratic P2 basis
  * reproduces any linear field exactly, so the true strain energy has no
@@ -831,14 +864,14 @@ inline void LaunchGlobalLinearElasticOperatorKernel(
  * of the comparison shares any code with the implementation under test.
  *
  * ---------------------------------------------------------------------------
- * Out of scope
+ * Out of scope validation
  * ---------------------------------------------------------------------------
  * Solving an actual boundary-value problem (e.g. a cantilever beam under an end
- * load) against its closed-form deflection, or against a third-party FE solver.
- * That would be a stronger, more standard benchmark than (7) since it exercises
- * bending rather than uniform stretch, which is where element formulations most
- * commonly fail (shear locking). But this approach requires a linear solver and
- * boundary-condition handling, both explicitly out of scope for this project.
+ * load) against its closed-form deflection, or against a third-party FE solver
+ * such as Abaqus/CalculiX. That would be a stronger, more standard verification
+ * than (7) since it exercises bending rather than uniform stretch. But this
+ * approach requires a linear solver and boundary-condition handling, both
+ * explicitly out of scope for this project.
  *
  * ---------------------------------------------------------------------------
  * Unit testing strategy
@@ -860,7 +893,7 @@ inline void LaunchGlobalLinearElasticOperatorKernel(
  *
  * - test_element_operator: properties (1), (2), (3), and (7) above. All
  * single-element checks, run directly against
- * ComputeElementLinearElasticOperator with no assembly involved.
+ * ComputeElementOperator with no assembly involved.
  *
  * - test_assembly: properties (3), (4), (5), and (6) above, on both a small
  * hand-built mesh and a programmatically generated mesh (N x N x N cube
