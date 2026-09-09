@@ -30,13 +30,8 @@ bool IsStrictlyInterior(const Vector3& x, double tol = 1e-12) {
            x.y() < 1.0 - tol && x.z() > tol && x.z() < 1.0 - tol;
 }
 
-double GlobalDot(const std::vector<Vector3>& a, const std::vector<Vector3>& b) {
-    double s = 0.0;
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        s += Dot(a[i], b[i]);
-    }
-    return s;
-}
+// GlobalDot (sum_i a[i] . b[i]) comes from linear_solver.hpp via
+// test_helpers.hpp.
 
 // Independent quadrature of integral(0.5 * sigma : epsilon) over the mesh.
 double IndependentStrainEnergy(

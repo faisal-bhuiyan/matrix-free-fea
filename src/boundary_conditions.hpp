@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 #include "assembly.hpp"
+#include "linear_solver.hpp"
 #include "mesh.hpp"
 #include "types.hpp"
 
@@ -163,6 +165,125 @@ inline std::vector<Vector3> ApplyPrescribedValues(
         }
     }
     return u;
+}
+
+//---------------------------------------------------------------------------
+// Jacobi (diagonal) preconditioner for the reduced system
+//---------------------------------------------------------------------------
+//
+// M = diag(K_FF). Cheap to build (@ref ComputeGlobalDiagonal, once per
+// solve), cheap to apply (a component-wise divide), and entirely local --
+// the same properties that make it the natural first preconditioner for a
+// matrix-free GPU code. It clusters K_FF's spectrum by scaling out the
+// per-DOF stiffness magnitude; the payoff is largest when the mesh or
+// material makes those magnitudes vary a lot across the domain.
+
+/**
+ * @brief Builds the Jacobi diagonal for the *reduced* operator K_FF.
+ *
+ * At free nodes this is diag(K). At constrained nodes @ref
+ * ApplyConstrainedOperator behaves as the identity (it zeroes those rows and
+ * the CG iterate is zero there), so the diagonal is set to 1 -- M^{-1} is a
+ * no-op on components that are identically zero throughout the solve anyway.
+ */
+inline std::vector<Vector3> BuildJacobiDiagonal(
+    const Mesh& mesh,
+    const std::vector<std::array<LinearElasticMaterial, 4>>& material,
+    const DirichletMask& mask
+) {
+    std::vector<Vector3> diagonal{ComputeGlobalDiagonal(mesh, material)};
+    for (std::size_t i = 0; i < diagonal.size(); ++i) {
+        if (mask.is_constrained[i]) {
+            diagonal[i] = Vector3::Ones();
+        }
+    }
+    return diagonal;
+}
+
+/**
+ * @brief Jacobi preconditioner functor: z = M^{-1} r, component-wise
+ * z[i] = r[i] / diagonal[i].
+ *
+ * Holds a reference to a diagonal owned by the caller (typically the vector
+ * from @ref BuildJacobiDiagonal, kept alive for the whole solve). Copyable
+ * so it can be passed by value into @ref PreconditionedConjugateGradient.
+ */
+class JacobiPreconditioner {
+public:
+    explicit JacobiPreconditioner(const std::vector<Vector3>& diagonal)
+        : diagonal_{diagonal} {}
+
+    void operator()(
+        const std::vector<Vector3>& r, std::vector<Vector3>& z
+    ) const {
+        z.resize(r.size());
+        for (std::size_t i = 0; i < r.size(); ++i) {
+            z[i] = r[i].cwiseQuotient(diagonal_[i]);
+        }
+    }
+
+private:
+    const std::vector<Vector3>& diagonal_;
+};
+
+//---------------------------------------------------------------------------
+// End-to-end Dirichlet solve driver
+//---------------------------------------------------------------------------
+
+/**
+ * @brief Full displacement field plus the solver's convergence record.
+ */
+struct DirichletSolveResult {
+    std::vector<Vector3> displacement;  ///< full field, prescribed values in
+    CGResult cg;                        ///< iterations, residual history, ...
+};
+
+/**
+ * @brief Solves K u = f with Dirichlet BCs via Jacobi-preconditioned CG.
+ *
+ * Ties together the pieces above so call sites do not repeat the
+ * mask/RHS/preconditioner/lift boilerplate: builds the mask, the lifted RHS
+ * b_F = f_F - K_FC u_D, and the Jacobi diagonal; runs PCG on the reduced
+ * operator from a zero start; and lifts the free-node solution back to the
+ * full field with the prescribed values.
+ *
+ * @param applied_load External load f, one Vector3 per node; entries at
+ *                      constrained nodes are ignored.
+ */
+inline DirichletSolveResult SolveDirichletSystem(
+    const Mesh& mesh,
+    const std::vector<std::array<LinearElasticMaterial, 4>>& material,
+    const DirichletBC& bc, const std::vector<Vector3>& applied_load,
+    double tolerance, int max_iterations
+) {
+    const DirichletMask mask{BuildDirichletMask(mesh, bc)};
+    const std::vector<Vector3> rhs{
+        ComputeDirichletRHS(mesh, material, mask, applied_load)
+    };
+    const std::vector<Vector3> jacobi_diagonal{
+        BuildJacobiDiagonal(mesh, material, mask)
+    };
+
+    std::vector<Vector3> x0(
+        static_cast<std::size_t>(mesh.NumNodes()), Vector3::Zero()
+    );
+    // The reduced-operator derivation needs x0 == 0 at every constrained
+    // node. It already is here; mask it anyway so a future warm-started
+    // caller cannot silently break that invariant.
+    ApplyZeroMask(mask, x0);
+
+    const auto apply_op = [&](const std::vector<Vector3>& p,
+                              std::vector<Vector3>& y) {
+        ApplyConstrainedOperator(mesh, p, material, mask, y);
+    };
+
+    CGResult cg{PreconditionedConjugateGradient(
+        apply_op, JacobiPreconditioner{jacobi_diagonal}, rhs, std::move(x0),
+        tolerance, max_iterations
+    )};
+
+    std::vector<Vector3> full{ApplyPrescribedValues(mask, cg.solution)};
+    return DirichletSolveResult{std::move(full), std::move(cg)};
 }
 
 }  // namespace matrix_free_fea

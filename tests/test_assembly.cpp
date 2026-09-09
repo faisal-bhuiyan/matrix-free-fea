@@ -191,6 +191,31 @@ TEST(Assembly, ZeroInputGivesZeroOutput) {
     }
 }
 
+TEST(Assembly, GlobalDiagonalMatchesAssembledMatrixDiagonal) {
+    const auto check = [](const Mesh& mesh) {
+        const auto material = VaryingMaterial(mesh.NumElements());
+
+        const std::vector<Vector3> diag = ComputeGlobalDiagonal(mesh, material);
+        ASSERT_EQ(static_cast<int>(diag.size()), mesh.NumNodes());
+
+        const Eigen::MatrixXd K = AssembleGlobalMatrix(mesh, material);
+        for (int n = 0; n < mesh.NumNodes(); ++n) {
+            for (int d = 0; d < kDimensions; ++d) {
+                const int dof = n * kDimensions + d;
+                EXPECT_NEAR(
+                    diag[n][d], K(dof, dof),
+                    1e-6 * std::max(std::fabs(K(dof, dof)), 1.0)
+                ) << "node "
+                  << n << " comp " << d;
+            }
+        }
+    };
+
+    check(MakeSkewedTetMesh());
+    check(MakeTwoElementPatchMesh());
+    check(MakeCubeMesh(2));
+}
+
 TEST(Assembly, OutputIsResizedAndZeroed) {
     Mesh mesh = MakeTwoElementPatchMesh();
     const auto material = UniformMaterial(mesh.NumElements(), 1.0e5, 0.5e5);

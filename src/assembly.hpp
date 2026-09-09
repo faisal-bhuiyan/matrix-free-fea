@@ -102,4 +102,66 @@ inline void ApplyGlobalLinearElasticityOperator(
     }
 }
 
+//---------------------------------------------------------------------------
+// Diagonal of the global operator (matrix-free)
+//---------------------------------------------------------------------------
+
+/**
+ * @brief Extracts diag(K) as one Vector3 per global node, without forming K.
+ *
+ * The natural input to a Jacobi (diagonal) preconditioner: M = diag(K), so
+ * M^{-1} r is a component-wise divide. Each element contributes the diagonal
+ * of its own K_e, scatter-added at the same connectivity slots
+ * @ref ApplyGlobalLinearElasticityOperator uses -- diag(K) is the sum of the
+ * element diagonals over all elements touching a node, exactly as the full
+ * operator is the sum of the element operators.
+ *
+ * Per element the 30 diagonal entries of K_e are recovered by probing
+ * @ref ComputeElementLinearElasticityOperator with unit local displacements:
+ * column (a, d) of K_e is K_e applied to the unit vector e_{a,d}, and that
+ * column's (a, d) entry is the diagonal term. 30 kernel evaluations per
+ * element -- obviously correct and still matrix-free. A closed-form diagonal
+ * kernel would avoid the 30x probe but is left as a later optimisation.
+ *
+ * Mapping to CUDA: same shape as the operator apply -- element loop becomes
+ * the thread grid, and the scatter `+=` becomes `atomicAdd`.
+ *
+ * @param mesh      Global node coordinates and per-element connectivity
+ * @param per_element_mat_props Lamé parameters at each element's 4 quadrature
+ *                  points, as in @ref ApplyGlobalLinearElasticityOperator
+ * @return diag(K), one Vector3 per global node (mesh.NumNodes() entries)
+ */
+inline std::vector<Vector3> ComputeGlobalDiagonal(
+    const Mesh& mesh, const std::vector<std::array<LinearElasticMaterial, 4>>&
+                          per_element_mat_props
+) {
+    std::vector<Vector3> diagonal(
+        static_cast<std::size_t>(mesh.NumNodes()), Vector3::Zero()
+    );
+
+    for (int elem = 0; elem < mesh.NumElements(); ++elem) {
+        const auto& connectivity = mesh.elements[elem];
+
+        Vector3 corner_nodes[4]{};
+        mesh.ElementCorners(elem, corner_nodes);
+
+        for (int a = 0; a < kNodesPerTetElement; ++a) {
+            for (int d = 0; d < kDimensions; ++d) {
+                Vector3 u_local[kNodesPerTetElement]{};
+                u_local[a][d] = 1.0;
+
+                Vector3 y_local[kNodesPerTetElement]{};
+                ComputeElementLinearElasticityOperator(
+                    corner_nodes, u_local, per_element_mat_props[elem].data(),
+                    y_local
+                );
+
+                // Scatter-add -> += becomes atomicAdd in a CUDA port
+                diagonal[connectivity[a]][d] += y_local[a][d];
+            }
+        }
+    }
+    return diagonal;
+}
+
 }  // namespace matrix_free_fea

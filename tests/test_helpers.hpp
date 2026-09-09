@@ -2,6 +2,9 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <iomanip>
+#include <iostream>
 #include <random>
 #include <set>
 #include <string>
@@ -13,6 +16,7 @@
 #include "assembly.hpp"
 #include "element_kernel.hpp"
 #include "geometry.hpp"
+#include "linear_solver.hpp"
 #include "mesh.hpp"
 #include "shape_functions.hpp"
 #include "test_meshes.hpp"
@@ -183,6 +187,67 @@ inline void ExpectVector3Near(
     EXPECT_NEAR(actual.x(), expected.x(), tol) << label;
     EXPECT_NEAR(actual.y(), expected.y(), tol) << label;
     EXPECT_NEAR(actual.z(), expected.z(), tol) << label;
+}
+
+//---------------------------------------------------------------------------
+// Solver-metric reporting (prints to stdout, never fails a test)
+//---------------------------------------------------------------------------
+
+/**
+ * @brief Dumps a CGResult's convergence trace to stdout under a "[ CG ]"
+ * tag so it shows up in `ctest --output-on-failure` / `--verbose`.
+ *
+ * Prints the header line (converged?, iteration count, final ||r||) and a
+ * residual-history table: iteration index, ||r_k||, and the per-step
+ * reduction ratio ||r_k|| / ||r_{k-1}||. Long runs are thinned to ~20 rows
+ * (first, every stride-th, and always the last).
+ */
+inline void PrintCGConvergence(const char* label, const CGResult& result) {
+    std::cout << "[ CG       ] " << label << ": "
+              << (result.converged ? "converged" : "DID NOT converge") << " in "
+              << result.iterations
+              << " iters, final ||r|| = " << std::scientific
+              << std::setprecision(3) << result.final_residual_norm
+              << std::defaultfloat << "\n";
+
+    const std::vector<double>& h = result.residual_history;
+    if (h.empty()) {
+        return;
+    }
+
+    constexpr std::size_t kMaxRows = 20;
+    const std::size_t stride =
+        h.size() <= kMaxRows ? 1 : (h.size() + kMaxRows - 1) / kMaxRows;
+
+    std::cout << "[ CG       ]     iter          ||r||     ratio\n";
+    for (std::size_t k = 0; k < h.size(); ++k) {
+        const bool last = (k + 1 == h.size());
+        if (k % stride != 0 && !last) {
+            continue;
+        }
+        std::cout << "[ CG       ]     " << std::setw(4) << k << "  "
+                  << std::setw(13) << std::scientific << std::setprecision(4)
+                  << h[k] << "  ";
+        if (k == 0 || h[k - 1] == 0.0) {
+            std::cout << "      -";
+        } else {
+            std::cout << std::setw(7) << std::fixed << std::setprecision(4)
+                      << (h[k] / h[k - 1]);
+        }
+        std::cout << std::defaultfloat << "\n";
+    }
+}
+
+/**
+ * @brief One-line side-by-side of two solves (e.g. plain CG vs Jacobi PCG).
+ */
+inline void PrintCGComparison(
+    const char* label, const char* name_a, const CGResult& a,
+    const char* name_b, const CGResult& b
+) {
+    std::cout << "[ CG-vs-PCG] " << label << ": " << name_a << " "
+              << a.iterations << " iters vs " << name_b << " " << b.iterations
+              << " iters  (saved " << (a.iterations - b.iterations) << ")\n";
 }
 
 /**

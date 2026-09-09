@@ -54,6 +54,31 @@ Vector3 ExactField(const Vector3& coords) {
     );
 }
 
+// clang-format off
+// Problem schematic -- uniaxial tension of the unit cube along x:
+//
+//     z
+//     |__ y
+//    /
+//   x
+//
+//     x=0 face                       x=1 face
+//   (pinned to u_exact)            (pinned to u_exact)
+//     +=============================+   --->  axial stretch:  u_x = delta*x
+//     |                             |
+//     |   free interior + side-face |   <-->  Poisson pull-in: u_y = -nu*delta*y
+//     |   nodes: every DOF SOLVED   |                          u_z = -nu*delta*z
+//     |                             |
+//     +=============================+   side faces y,z = 0,1 are traction-free
+//                                       (sigma_yy = sigma_zz = 0)
+//
+//   u_exact(x,y,z) = ( delta*x, -nu*delta*y, -nu*delta*z ),
+//                    nu = lambda / (2*(lambda + mu))
+//
+// Only the x=0 / x=1 node displacements are prescribed; the field is linear
+// so a correct P2 pipeline must reproduce u_exact at every solved node.
+// clang-format on
+
 /**
  * @brief Builds the DirichletBC fixing every x=0 and x=1 node to the exact
  * field's value there (NOT to zero -- most such nodes have nonzero y/z
@@ -104,14 +129,19 @@ void RunUniaxialTensionCase(int divisions) {
     );
 
     const auto apply_op = [&](const std::vector<Vector3>& p,
-                               std::vector<Vector3>& y) {
+                              std::vector<Vector3>& y) {
         ApplyConstrainedOperator(mesh, p, material, mask, y);
     };
 
-    const CGResult result{
-        ConjugateGradient(apply_op, rhs, x0, /*tolerance=*/1e-12,
-                           /*max_iterations=*/2000)
-    };
+    const CGResult result{ConjugateGradient(
+        apply_op, rhs, x0, /*tolerance=*/1e-12,
+        /*max_iterations=*/2000
+    )};
+
+    PrintCGConvergence(
+        ("uniaxial tension, divisions=" + std::to_string(divisions)).c_str(),
+        result
+    );
 
     ASSERT_TRUE(result.converged)
         << "CG did not converge in " << result.iterations
@@ -134,6 +164,12 @@ void RunUniaxialTensionCase(int divisions) {
 //---------------------------------------------------------------------------
 // Trivial edge case: every node constrained, nothing to solve for
 //---------------------------------------------------------------------------
+//
+//   +-----------+     every node pinned  ->  free set is empty
+//   | x x x x x |     ->  initial residual is already 0
+//   | x x x x x |     ->  CG returns at iteration 0, converged
+//   +-----------+
+//   (x = constrained node)
 
 TEST(EndToEnd, FullyConstrainedProblemConvergesTrivially) {
     const Mesh mesh{MakeReferenceTetMesh()};
@@ -154,16 +190,17 @@ TEST(EndToEnd, FullyConstrainedProblemConvergesTrivially) {
     };
 
     const auto apply_op = [&](const std::vector<Vector3>& p,
-                               std::vector<Vector3>& y) {
+                              std::vector<Vector3>& y) {
         ApplyConstrainedOperator(mesh, p, material, mask, y);
     };
 
-    const CGResult result{
-        ConjugateGradient(apply_op, rhs, zero, 1e-12, 100)
-    };
+    const CGResult result{ConjugateGradient(apply_op, rhs, zero, 1e-12, 100)};
+
+    PrintCGConvergence("fully constrained (empty free set)", result);
 
     EXPECT_TRUE(result.converged);
     EXPECT_EQ(result.iterations, 0);
+    EXPECT_EQ(result.residual_history.size(), 1u);
 }
 
 //---------------------------------------------------------------------------
