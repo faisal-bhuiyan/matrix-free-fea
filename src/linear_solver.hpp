@@ -51,6 +51,37 @@ struct IdentityPreconditioner {
     }
 };
 
+/**
+ * @brief Jacobi (diagonal) preconditioner: z = M^{-1} r, component-wise
+ * z[i] = r[i] / diagonal[i].
+ *
+ * Generic over how the diagonal is produced -- it only needs one Vector3 of
+ * strictly nonzero entries per DOF. For a Dirichlet-constrained elasticity
+ * solve that vector is diag(K_FF); see BuildJacobiDiagonal in
+ * boundary_conditions.hpp, which also explains why constrained rows carry 1.
+ *
+ * Holds a reference to a diagonal owned by the caller (kept alive for the
+ * whole solve). Copyable, so it can be passed by value into @ref
+ * PreconditionedConjugateGradient.
+ */
+class JacobiPreconditioner {
+public:
+    explicit JacobiPreconditioner(const std::vector<Vector3>& diagonal)
+        : diagonal_{diagonal} {}
+
+    void operator()(
+        const std::vector<Vector3>& r, std::vector<Vector3>& z
+    ) const {
+        z.resize(r.size());
+        for (std::size_t i = 0; i < r.size(); ++i) {
+            z[i] = r[i].cwiseQuotient(diagonal_[i]);
+        }
+    }
+
+private:
+    const std::vector<Vector3>& diagonal_;
+};
+
 //---------------------------------------------------------------------------
 // Conjugate Gradient
 //---------------------------------------------------------------------------

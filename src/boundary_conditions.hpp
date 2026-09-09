@@ -168,7 +168,7 @@ inline std::vector<Vector3> ApplyPrescribedValues(
 }
 
 //---------------------------------------------------------------------------
-// Jacobi (diagonal) preconditioner for the reduced system
+// Jacobi (diagonal) preconditioner diagonal for the reduced system
 //---------------------------------------------------------------------------
 //
 // M = diag(K_FF). Cheap to build (@ref ComputeGlobalDiagonal, once per
@@ -177,6 +177,11 @@ inline std::vector<Vector3> ApplyPrescribedValues(
 // matrix-free GPU code. It clusters K_FF's spectrum by scaling out the
 // per-DOF stiffness magnitude; the payoff is largest when the mesh or
 // material makes those magnitudes vary a lot across the domain.
+//
+// Only the diagonal is built here, because that is the part that needs the
+// Dirichlet mask. The preconditioner itself -- the z = M^{-1} r functor --
+// is generic and lives with the solver as JacobiPreconditioner in
+// linear_solver.hpp; feed it the vector this function returns.
 
 /**
  * @brief Builds the Jacobi diagonal for the *reduced* operator K_FF.
@@ -199,32 +204,6 @@ inline std::vector<Vector3> BuildJacobiDiagonal(
     }
     return diagonal;
 }
-
-/**
- * @brief Jacobi preconditioner functor: z = M^{-1} r, component-wise
- * z[i] = r[i] / diagonal[i].
- *
- * Holds a reference to a diagonal owned by the caller (typically the vector
- * from @ref BuildJacobiDiagonal, kept alive for the whole solve). Copyable
- * so it can be passed by value into @ref PreconditionedConjugateGradient.
- */
-class JacobiPreconditioner {
-public:
-    explicit JacobiPreconditioner(const std::vector<Vector3>& diagonal)
-        : diagonal_{diagonal} {}
-
-    void operator()(
-        const std::vector<Vector3>& r, std::vector<Vector3>& z
-    ) const {
-        z.resize(r.size());
-        for (std::size_t i = 0; i < r.size(); ++i) {
-            z[i] = r[i].cwiseQuotient(diagonal_[i]);
-        }
-    }
-
-private:
-    const std::vector<Vector3>& diagonal_;
-};
 
 //---------------------------------------------------------------------------
 // End-to-end Dirichlet solve driver
