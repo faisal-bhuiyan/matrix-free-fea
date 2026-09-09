@@ -28,3 +28,10 @@ add_executable(matrix-free-fea_validation_tests
 target_link_libraries(matrix-free-fea_validation_tests PRIVATE GTest::gtest_main matrix-free-fea)
 target_include_directories(matrix-free-fea_validation_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 gtest_discover_tests(matrix-free-fea_validation_tests)
+
+add_executable(matrix-free-fea_end_to_end_tests
+    test_end_to_end.cpp
+)
+target_link_libraries(matrix-free-fea_end_to_end_tests PRIVATE GTest::gtest_main matrix-free-fea)
+target_include_directories(matrix-free-fea_end_to_end_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(matrix-free-fea_end_to_end_tests)
