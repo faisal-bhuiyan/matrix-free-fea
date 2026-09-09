@@ -88,7 +88,7 @@ ctest --test-dir build -R LinearSolver --output-on-failure
 
 A CUDA **operator** already lives under [`src/cuda/`](src/cuda/) and as the standalone [`src/standalone/matrix_free_fea.cu`](src/standalone/matrix_free_fea.cu): one thread per element, same gather / apply / scatter structure as the CPU loop, `atomicAdd` on shared nodes, and hand-rolled device `Vector3` / `Matrix3` (no Eigen on device).
 
-That code is **not** part of the CMake build and is not covered by the current tests. There is no GPU linear solver yet.
+That code is **not** part of the CMake build and is not covered by the current tests. There is no GPU linear solver yet. Interview-oriented walkthrough of the standalone CUDA operator: [`src/standalone/INTERVIEW_QA.md`](src/standalone/INTERVIEW_QA.md).
 
 Planned direction:
 
